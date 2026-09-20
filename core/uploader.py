@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import time
 from pathlib import Path
 from typing import Any, Awaitable, Callable
 
@@ -38,6 +39,10 @@ async def upload_clip(
     last_error: Exception | None = None
     for attempt in range(retries + 1):
         try:
+            print(
+                f"[UPLOAD] Starting clip={path.name} attempt={attempt + 1}/{retries + 1}",
+                flush=True,
+            )
             await notify({"stage": "uploading", "status": "starting", "path": str(path), "attempt": attempt + 1})
             message = await client.send_file(
                 channel,
@@ -47,10 +52,16 @@ async def upload_clip(
                     progress_callback, sent, total, path
                 ),
             )
+            print(f"[UPLOAD] Complete: {path.name}", flush=True)
             await notify({"stage": "uploading", "status": "complete", "path": str(path)})
             return message
         except Exception as exc:
             last_error = exc
+            print(
+                f"[UPLOAD] FAILED clip={path.name} attempt={attempt + 1}: "
+                f"{type(exc).__name__}: {exc}",
+                flush=True,
+            )
             await notify({"stage": "uploading", "status": "retry", "path": str(path), "attempt": attempt + 1, "error": str(exc)})
 
     raise UploadError(f"Upload failed for {path}: {last_error}") from last_error
@@ -76,6 +87,19 @@ def _notify_progress(
         "total_bytes": total,
         "percent": round((sent / total) * 100, 1) if total else 0,
     }
+    now = time.monotonic()
+    last_log = getattr(_notify_progress, "_last_log", {})
+    last_time, last_path = last_log.get(str(path), (0.0, 0))
+    if now - last_time >= 1.0 or sent >= total:
+        speed = (sent - last_path) / max(now - last_time, 0.001) if last_time else 0.0
+        print(
+            f"[UPLOAD] {path.name} | {payload['percent']:.1f}% | "
+            f"{sent}/{total} bytes | speed={speed / 1024 / 1024:.2f} MB/s",
+            flush=True,
+        )
+        last_log[str(path)] = (now, sent)
+        _notify_progress._last_log = last_log
+
     result = callback(payload)
     if asyncio.iscoroutine(result):
         try:
