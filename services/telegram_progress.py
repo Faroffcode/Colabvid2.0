@@ -31,6 +31,19 @@ class TelegramProgressReporter:
         self._last_render = time.monotonic()
         return self.message
 
+    def callback(self, loop: Any | None = None):
+        """Return the async progress callback expected by the pipeline.
+
+        The pipeline may invoke this callback from a worker thread. The
+        caller is responsible for scheduling the returned awaitable on the
+        Telegram event loop.
+        """
+
+        async def _callback(payload: dict[str, Any]) -> None:
+            await self.update(payload)
+
+        return _callback
+
     async def update(self, payload: dict[str, Any], *, force: bool = False) -> None:
         """Apply an event payload and edit the existing status message."""
         if self.message is None:
