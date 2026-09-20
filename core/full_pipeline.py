@@ -50,9 +50,25 @@ async def run_full_pipeline(
         if result is not None:
             asyncio.run_coroutine_threadsafe(result, loop)
 
+    def download_progress(downloaded: int, total: int | None) -> None:
+        """Adapt the downloader's numeric callback to the pipeline payload format."""
+        percent = round((downloaded * 100 / total), 1) if total else 0.0
+        emit({
+            "stage": "downloading",
+            "status": "progress",
+            "downloaded_bytes": downloaded,
+            "total_bytes": total,
+            "percent": percent,
+        })
+
     try:
         print("[PIPELINE] Downloading source", flush=True)
-        await asyncio.to_thread(download_file, source_url, source, progress_callback=emit)
+        await asyncio.to_thread(
+            download_file,
+            source_url,
+            source,
+            progress_callback=download_progress,
+        )
         print(f"[PIPELINE] Download complete: {source}", flush=True)
 
         job_manager.update(
