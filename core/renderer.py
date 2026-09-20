@@ -49,7 +49,7 @@ def render_clip(
     preset: str = "medium",
     progress_callback: ProgressCallback | None = None,
 ) -> Path:
-    """Render one padded vertical clip using FFmpeg."""
+    """Render one padded vertical clip using FFmpeg with live progress events."""
     source = Path(input_path)
     destination = Path(output_path)
 
@@ -69,7 +69,8 @@ def render_clip(
         ffmpeg, "-y", "-ss", str(start_seconds), "-i", str(source),
         "-t", str(duration_seconds), "-vf", build_vertical_filter(width, height),
         "-c:v", "libx264", "-preset", preset, "-crf", str(crf),
-        "-c:a", "aac", "-movflags", "+faststart", str(destination),
+        "-c:a", "aac", "-progress", "pipe:1", "-nostats",
+        "-movflags", "+faststart", str(destination),
     ]
 
     print(
@@ -83,14 +84,45 @@ def render_clip(
         progress_callback({
             "stage": "encoding", "status": "starting", "input": str(source),
             "output": str(destination), "start_seconds": start_seconds,
-            "duration_seconds": duration_seconds,
+            "duration_seconds": duration_seconds, "percent": 0,
         })
 
-    process = subprocess.run(command, capture_output=True, text=True, check=False)
+    process = subprocess.Popen(
+        command,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        bufsize=1,
+    )
 
-    if process.returncode != 0:
-        error = process.stderr.strip() or "FFmpeg exited with an unknown error"
+    last_percent = -1
+    if process.stdout:
+        for line in process.stdout:
+            line = line.strip()
+            if not line.startswith("out_time_ms="):
+                continue
+            try:
+                elapsed_us = int(line.split("=", 1)[1])
+                percent = min(99, max(0, int((elapsed_us / 1_000_000) / duration_seconds * 100)))
+            except (ValueError, ZeroDivisionError):
+                continue
+            if percent != last_percent:
+                last_percent = percent
+                print(f"[ENCODING] Progress: {percent}%", flush=True)
+                if progress_callback:
+                    progress_callback({
+                        "stage": "encoding", "status": "progress",
+                        "percent": percent, "start_seconds": start_seconds,
+                        "duration_seconds": duration_seconds,
+                    })
+
+    stderr = process.stderr.read().strip() if process.stderr else ""
+    return_code = process.wait()
+    if return_code != 0:
+        error = stderr or "FFmpeg exited with an unknown error"
         print(f"[ENCODING] FAILED: {error}", flush=True)
+        if progress_callback:
+            progress_callback({"stage": "encoding", "status": "error", "error": error})
         raise RendererError(error)
 
     print(f"[ENCODING] Complete: {destination}", flush=True)
@@ -98,6 +130,7 @@ def render_clip(
         progress_callback({
             "stage": "encoding", "status": "complete", "output": str(destination),
             "start_seconds": start_seconds, "duration_seconds": duration_seconds,
+            "percent": 100,
         })
 
     return destination
