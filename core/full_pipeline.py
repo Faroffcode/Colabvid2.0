@@ -8,7 +8,7 @@ from typing import Any, Awaitable, Callable
 
 from core.pipeline import PipelineResult, run_pipeline
 from core.upload_pipeline import upload_clips
-from services.jobs import JobManager
+from services.jobs import JobManager, JobStage
 
 
 ProgressCallback = Callable[[dict[str, Any]], Awaitable[None] | None]
@@ -51,14 +51,33 @@ async def run_full_pipeline(
         progress_callback=processing_callback,
     )
 
-    uploaded = await upload_clips(
-        client=client,
-        channel=channel,
-        job_manager=job_manager,
-        job_id=job_id,
-        clip_paths=result.clip_paths,
-        progress_callback=progress_callback,
-        caption_template=caption_template,
-        retries=retries,
-    )
+    try:
+        uploaded = await upload_clips(
+            client=client,
+            channel=channel,
+            job_manager=job_manager,
+            job_id=job_id,
+            clip_paths=result.clip_paths,
+            progress_callback=progress_callback,
+            caption_template=caption_template,
+            retries=retries,
+        )
+    except Exception as exc:
+        job_manager.update(
+            job_id,
+            stage=JobStage.FAILED,
+            error=str(exc),
+        )
+        if progress_callback is not None:
+            result_callback = progress_callback(
+                {
+                    "job_id": job_id,
+                    "stage": JobStage.FAILED.value,
+                    "error": str(exc),
+                }
+            )
+            if result_callback is not None:
+                await result_callback
+        raise
+
     return result, uploaded
