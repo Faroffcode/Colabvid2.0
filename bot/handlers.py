@@ -35,10 +35,15 @@ def register_handlers(client, *, channel_id: int, job_manager: JobManager) -> No
     @client.on(events.NewMessage(func=lambda event: bool(event.raw_text)))
     async def text_handler(event):
         text = event.raw_text.strip()
-        if text.startswith("/"):
+        conversation_key = event.chat_id or event.sender_id
+
+        if text.lower() == "/cancel" and conversation_key in pending_urls:
+            pending_urls.pop(conversation_key, None)
+            await event.respond("❌ File-name request cancelled.")
             return
 
-        conversation_key = event.chat_id or event.sender_id
+        if text.startswith("/"):
+            return
 
         if text.startswith(("http://", "https://")):
             pending_urls[conversation_key] = text
@@ -51,11 +56,6 @@ def register_handlers(client, *, channel_id: int, job_manager: JobManager) -> No
             return
 
         if conversation_key not in pending_urls:
-            return
-
-        if text.lower() == "/cancel":
-            pending_urls.pop(conversation_key, None)
-            await event.respond("❌ File-name request cancelled.")
             return
 
         source_url = pending_urls.pop(conversation_key)
@@ -86,7 +86,7 @@ async def _start_url_job(
     source_url: str,
     file_name: str,
 ) -> None:
-    """Start one URL job and keep all progress in one Telegram message."""
+    """Start one URL job and keep all progress in one Telegram status message."""
     job_id = uuid4().hex[:12]
 
     reporter = TelegramProgressReporter(event)
