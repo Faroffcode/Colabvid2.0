@@ -84,6 +84,9 @@ def download_file(
                         last_log = now
                         last_downloaded = downloaded
 
+            if progress_callback:
+                progress_callback(downloaded, total or downloaded)
+
             elapsed = max(time.monotonic() - started, 0.001)
             print(
                 f"[DOWNLOAD] Complete: {downloaded} bytes in {elapsed:.1f}s "
