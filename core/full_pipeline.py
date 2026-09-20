@@ -1,9 +1,8 @@
-"""End-to-end Colabvid processing with parallel encoding and uploading."""
+"""End-to-end Colabvid processing with one encoder and one uploader."""
 
 from __future__ import annotations
 
 import asyncio
-import os
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Awaitable, Callable
@@ -38,16 +37,15 @@ async def run_full_pipeline(
     caption_template: str = "🎬 Clip {index}/{total}",
     retries: int = 2,
 ) -> tuple[PipelineResult, list[Any]]:
-    """Download once, then encode and upload clips concurrently with limits."""
+    """Download once, then overlap one encode and one upload at a time."""
     loop = asyncio.get_running_loop()
     source = Path(download_path)
     output_root = Path(output_dir)
     output_root.mkdir(parents=True, exist_ok=True)
 
-    encode_workers = max(1, int(os.getenv("COLABVID_ENCODE_WORKERS", "2")))
-    upload_workers = max(1, int(os.getenv("COLABVID_UPLOAD_WORKERS", "2")))
-    encode_semaphore = asyncio.Semaphore(encode_workers)
-    upload_semaphore = asyncio.Semaphore(upload_workers)
+    # Deliberately fixed: one FFmpeg encoder and one Telegram uploader only.
+    encode_semaphore = asyncio.Semaphore(1)
+    upload_semaphore = asyncio.Semaphore(1)
 
     def emit(payload: dict[str, Any]) -> None:
         if progress_callback is None:
@@ -146,10 +144,11 @@ async def run_full_pipeline(
         results = await asyncio.gather(
             *(process_clip(index) for index in range(clip_count))
         )
-        clips = [clip for clip, _ in sorted(results, key=lambda item: item[0].name)]
-        messages = [message for _, message in sorted(results, key=lambda item: item[0].name)]
+        ordered_results = sorted(results, key=lambda item: item[0].name)
+        clips = [clip for clip, _ in ordered_results]
+        messages = [message for _, message in ordered_results]
 
-        print(f"[PIPELINE] Parallel encode/upload complete: {len(clips)} clips", flush=True)
+        print(f"[PIPELINE] Encode/upload complete: {len(clips)} clips", flush=True)
         return PipelineResult(clip_paths=clips), messages
 
     except Exception as exc:
