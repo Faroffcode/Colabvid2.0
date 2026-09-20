@@ -18,10 +18,12 @@ class PipelineProgress:
     completed: int = 0
     total: int = 0
     retries: int = 0
+    error: str = ""
 
 
 def format_pipeline_status(progress: PipelineProgress) -> str:
     """Return the single Telegram status message used by the pipeline."""
+    error_text = f"\n\n❌ **Error:** `{progress.error}`" if progress.error else ""
     return (
         "🎬 **COLABVID PIPELINE**\n\n"
         f"📁 File: `{progress.file_name}`\n\n"
@@ -40,4 +42,5 @@ def format_pipeline_status(progress: PipelineProgress) -> str:
         f"⏳ Waiting: {progress.waiting}\n"
         f"✅ Completed: {progress.completed}/{progress.total}\n\n"
         f"🔁 Retries: {progress.retries}"
+        f"{error_text}"
     )
