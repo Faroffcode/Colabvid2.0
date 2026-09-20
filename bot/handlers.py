@@ -4,8 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import re
-from pathlib import Path
-from urllib.parse import urlparse
+from typing import Any
 from uuid import uuid4
 
 from telethon import events
@@ -18,11 +17,15 @@ from services.telegram_progress import TelegramProgressReporter
 
 DEFAULT_CLIP_DURATION = 60.0
 DEFAULT_CLIP_COUNT = 5
+MIN_CLIP_DURATION = 1.0
+MAX_CLIP_DURATION = 3600.0
+MIN_CLIP_COUNT = 1
+MAX_CLIP_COUNT = 100
 
 
 def register_handlers(client, *, channel_id: int, job_manager: JobManager) -> None:
     """Register Telegram handlers using the authenticated Telethon client."""
-    pending_urls: dict[int, str] = {}
+    pending: dict[int, dict[str, Any]] = {}
 
     @client.on(events.NewMessage(pattern=r"^/start$"))
     async def start_handler(event):
@@ -37,16 +40,16 @@ def register_handlers(client, *, channel_id: int, job_manager: JobManager) -> No
         text = event.raw_text.strip()
         conversation_key = event.chat_id or event.sender_id
 
-        if text.lower() == "/cancel" and conversation_key in pending_urls:
-            pending_urls.pop(conversation_key, None)
-            await event.respond("❌ File-name request cancelled.")
+        if text.lower() == "/cancel":
+            if pending.pop(conversation_key, None) is not None:
+                await event.respond("❌ Video setup cancelled.")
             return
 
         if text.startswith("/"):
             return
 
         if text.startswith(("http://", "https://")):
-            pending_urls[conversation_key] = text
+            pending[conversation_key] = {"source_url": text, "step": "filename"}
             await event.respond(
                 "📝 **Custom file name**\n\n"
                 "Send the name you want to use for this video.\n"
@@ -55,26 +58,75 @@ def register_handlers(client, *, channel_id: int, job_manager: JobManager) -> No
             )
             return
 
-        if conversation_key not in pending_urls:
+        setup = pending.get(conversation_key)
+        if setup is None:
             return
 
-        source_url = pending_urls.pop(conversation_key)
-        file_name = _clean_file_name(text)
-        if not file_name:
+        step = setup["step"]
+
+        if step == "filename":
+            file_name = _clean_file_name(text)
+            if not file_name:
+                await event.respond("⚠️ Please send a valid file name.")
+                return
+            setup["file_name"] = file_name
+            setup["step"] = "duration"
             await event.respond(
-                "⚠️ Please send a valid file name, or send `/cancel` to cancel."
+                "⏱️ **Clip duration**\n\n"
+                "How many seconds should each clip contain?\n"
+                "Example: `60`\n\n"
+                f"Allowed range: {MIN_CLIP_DURATION:g}–{MAX_CLIP_DURATION:g} seconds."
             )
-            pending_urls[conversation_key] = source_url
             return
 
-        await _start_url_job(
-            event,
-            client=client,
-            channel_id=channel_id,
-            job_manager=job_manager,
-            source_url=source_url,
-            file_name=file_name,
-        )
+        if step == "duration":
+            duration = _parse_duration(text)
+            if duration is None:
+                await event.respond(
+                    f"⚠️ Enter a number between {MIN_CLIP_DURATION:g} and "
+                    f"{MAX_CLIP_DURATION:g} seconds. Example: `60`"
+                )
+                return
+            setup["clip_duration"] = duration
+            setup["step"] = "count"
+            await event.respond(
+                "🎞️ **Number of clips**\n\n"
+                "How many clips should be created?\n"
+                "Example: `5`\n\n"
+                f"Allowed range: {MIN_CLIP_COUNT}–{MAX_CLIP_COUNT}."
+            )
+            return
+
+        if step == "count":
+            clip_count = _parse_clip_count(text)
+            if clip_count is None:
+                await event.respond(
+                    f"⚠️ Enter a whole number between {MIN_CLIP_COUNT} and "
+                    f"{MAX_CLIP_COUNT}. Example: `5`"
+                )
+                return
+
+            setup["clip_count"] = clip_count
+            pending.pop(conversation_key, None)
+            await event.respond(
+                "✅ **Video settings received**\n\n"
+                f"📁 File: `{setup['file_name']}`\n"
+                f"⏱️ Duration: `{setup['clip_duration']:g}s`\n"
+                f"🎞️ Clips: `{clip_count}`\n\n"
+                "🚀 Starting pipeline..."
+            )
+            await _start_url_job(
+                event,
+                client=client,
+                channel_id=channel_id,
+                job_manager=job_manager,
+                source_url=setup["source_url"],
+                file_name=setup["file_name"],
+                clip_duration=setup["clip_duration"],
+                clip_count=clip_count,
+            )
+
+    return None
 
 
 async def _start_url_job(
@@ -85,12 +137,14 @@ async def _start_url_job(
     job_manager: JobManager,
     source_url: str,
     file_name: str,
+    clip_duration: float,
+    clip_count: int,
 ) -> None:
     """Start one URL job and keep all progress in one Telegram status message."""
     job_id = uuid4().hex[:12]
 
     reporter = TelegramProgressReporter(event)
-    await reporter.start(file_name=file_name, total=DEFAULT_CLIP_COUNT)
+    await reporter.start(file_name=file_name, total=clip_count)
     loop = asyncio.get_running_loop()
     callback = reporter.callback(loop)
 
@@ -98,8 +152,8 @@ async def _start_url_job(
         job_id,
         source_url,
         filename=file_name,
-        clip_duration=DEFAULT_CLIP_DURATION,
-        clip_count=DEFAULT_CLIP_COUNT,
+        clip_duration=clip_duration,
+        clip_count=clip_count,
     )
 
     try:
@@ -111,8 +165,8 @@ async def _start_url_job(
             source_url=source_url,
             download_path=f"/content/colabvid/downloads/{job_id}.mp4",
             output_dir=f"/content/colabvid/outputs/{job_id}",
-            clip_duration=DEFAULT_CLIP_DURATION,
-            clip_count=DEFAULT_CLIP_COUNT,
+            clip_duration=clip_duration,
+            clip_count=clip_count,
             progress_callback=callback,
             caption_template=f"🎬 {file_name} · Clip {{index}}/{{total}}",
         )
@@ -126,3 +180,24 @@ def _clean_file_name(value: str) -> str:
     cleaned = re.sub(r"[\\/:*?\"<>|\n\r\t]", " ", value)
     cleaned = re.sub(r"\s+", " ", cleaned).strip(" .")
     return cleaned[:80]
+
+
+def _parse_duration(value: str) -> float | None:
+    """Parse and validate a clip duration supplied by the user."""
+    try:
+        duration = float(value)
+    except ValueError:
+        return None
+    if not MIN_CLIP_DURATION <= duration <= MAX_CLIP_DURATION:
+        return None
+    return duration
+
+
+def _parse_clip_count(value: str) -> int | None:
+    """Parse and validate a clip count supplied by the user."""
+    if not value.isdigit():
+        return None
+    count = int(value)
+    if not MIN_CLIP_COUNT <= count <= MAX_CLIP_COUNT:
+        return None
+    return count
