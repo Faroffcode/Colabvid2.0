@@ -19,6 +19,7 @@ class TelegramProgressReporter:
         self.message: Any | None = None
         self._last_render = 0.0
         self._lock = asyncio.Lock()
+        self._completed_upload_clips: set[int] = set()
 
     async def start(self, *, file_name: str, total: int = 0) -> Any:
         """Create the only status message used by this reporter."""
@@ -110,9 +111,18 @@ class TelegramProgressReporter:
             if payload.get("percent") is not None:
                 self.progress.upload_percent = round(float(payload["percent"]))
             if status == "complete":
-                self.progress.completed = min(
-                    self.progress.total, self.progress.completed + 1
-                )
+                clip = payload.get("clip")
+                if clip is not None:
+                    clip_number = int(clip)
+                    if clip_number not in self._completed_upload_clips:
+                        self._completed_upload_clips.add(clip_number)
+                        self.progress.completed = min(
+                            self.progress.total, self.progress.completed + 1
+                        )
+                else:
+                    self.progress.completed = min(
+                        self.progress.total, self.progress.completed + 1
+                    )
 
         if payload.get("retries") is not None:
             self.progress.retries = int(payload["retries"])
