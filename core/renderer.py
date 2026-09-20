@@ -26,7 +26,7 @@ def ensure_ffmpeg() -> str:
 
 
 def detect_video_encoder(ffmpeg: str) -> tuple[str, bool]:
-    """Use NVIDIA NVENC when available, otherwise fall back to libx264."""
+    """Prefer NVIDIA NVENC when listed, with runtime fallback handled by render_clip."""
     try:
         result = subprocess.run(
             [ffmpeg, "-hide_banner", "-encoders"],
@@ -39,10 +39,10 @@ def detect_video_encoder(ffmpeg: str) -> tuple[str, bool]:
         encoders = ""
 
     if "h264_nvenc" in encoders:
-        print("[ENCODING] GPU encoder detected: h264_nvenc", flush=True)
+        print("[ENCODING] NVENC listed; runtime availability will be verified", flush=True)
         return "h264_nvenc", True
 
-    print("[ENCODING] GPU encoder unavailable; using CPU libx264", flush=True)
+    print("[ENCODING] NVENC unavailable; using CPU libx264", flush=True)
     return "libx264", False
 
 
@@ -58,6 +58,34 @@ def build_vertical_filter(width: int = 1080, height: int = 1920) -> str:
     )
 
 
+def _build_command(
+    ffmpeg: str,
+    source: Path,
+    destination: Path,
+    start_seconds: float,
+    duration_seconds: float,
+    width: int,
+    height: int,
+    crf: int,
+    preset: str,
+    encoder: str,
+    use_gpu: bool,
+) -> list[str]:
+    video_options = ["-c:v", encoder]
+    if use_gpu:
+        video_options += ["-preset", "p4", "-cq", str(crf)]
+    else:
+        video_options += ["-preset", preset, "-crf", str(crf)]
+
+    return [
+        ffmpeg, "-y", "-ss", str(start_seconds), "-i", str(source),
+        "-t", str(duration_seconds), "-vf", build_vertical_filter(width, height),
+        *video_options,
+        "-c:a", "aac", "-progress", "pipe:1", "-nostats",
+        "-movflags", "+faststart", str(destination),
+    ]
+
+
 def render_clip(
     input_path: str | Path,
     output_path: str | Path,
@@ -70,7 +98,7 @@ def render_clip(
     preset: str = "medium",
     progress_callback: ProgressCallback | None = None,
 ) -> Path:
-    """Render one padded vertical clip with automatic GPU acceleration when available."""
+    """Render one padded vertical clip with automatic GPU fallback."""
     source = Path(input_path)
     destination = Path(output_path)
 
@@ -87,19 +115,39 @@ def render_clip(
     encoder, use_gpu = detect_video_encoder(ffmpeg)
     destination.parent.mkdir(parents=True, exist_ok=True)
 
-    video_options = ["-c:v", encoder]
-    if use_gpu:
-        video_options += ["-preset", "p4", "-cq", str(crf)]
-    else:
-        video_options += ["-preset", preset, "-crf", str(crf)]
+    def run(command: list[str]) -> tuple[int, str]:
+        process = subprocess.Popen(
+            command,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            bufsize=1,
+        )
 
-    command = [
-        ffmpeg, "-y", "-ss", str(start_seconds), "-i", str(source),
-        "-t", str(duration_seconds), "-vf", build_vertical_filter(width, height),
-        *video_options,
-        "-c:a", "aac", "-progress", "pipe:1", "-nostats",
-        "-movflags", "+faststart", str(destination),
-    ]
+        last_percent = -1
+        if process.stdout:
+            for line in process.stdout:
+                line = line.strip()
+                if not line.startswith("out_time_ms="):
+                    continue
+                try:
+                    elapsed_us = int(line.split("=", 1)[1])
+                    percent = min(99, max(0, int((elapsed_us / 1_000_000) / duration_seconds * 100)))
+                except (ValueError, ZeroDivisionError):
+                    continue
+                if percent != last_percent:
+                    last_percent = percent
+                    print(f"[ENCODING] Progress: {percent}%", flush=True)
+                    if progress_callback:
+                        progress_callback({
+                            "stage": "encoding", "status": "progress",
+                            "percent": percent, "start_seconds": start_seconds,
+                            "duration_seconds": duration_seconds, "encoder": encoder,
+                            "gpu": use_gpu,
+                        })
+
+        stderr = process.stderr.read().strip() if process.stderr else ""
+        return process.wait(), stderr
 
     mode = "GPU/NVENC" if use_gpu else "CPU/libx264"
     print(
@@ -117,38 +165,27 @@ def render_clip(
             "percent": 0,
         })
 
-    process = subprocess.Popen(
-        command,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
-        bufsize=1,
+    command = _build_command(
+        ffmpeg, source, destination, start_seconds, duration_seconds,
+        width, height, crf, preset, encoder, use_gpu,
     )
+    return_code, stderr = run(command)
 
-    last_percent = -1
-    if process.stdout:
-        for line in process.stdout:
-            line = line.strip()
-            if not line.startswith("out_time_ms="):
-                continue
-            try:
-                elapsed_us = int(line.split("=", 1)[1])
-                percent = min(99, max(0, int((elapsed_us / 1_000_000) / duration_seconds * 100)))
-            except (ValueError, ZeroDivisionError):
-                continue
-            if percent != last_percent:
-                last_percent = percent
-                print(f"[ENCODING] Progress: {percent}%", flush=True)
-                if progress_callback:
-                    progress_callback({
-                        "stage": "encoding", "status": "progress",
-                        "percent": percent, "start_seconds": start_seconds,
-                        "duration_seconds": duration_seconds, "encoder": encoder,
-                        "gpu": use_gpu,
-                    })
+    if return_code != 0 and use_gpu and (
+        "Cannot load libcuda" in stderr
+        or "h264_nvenc" in stderr
+        or "No NVENC capable devices found" in stderr
+    ):
+        print("[ENCODING] NVENC runtime unavailable; retrying with CPU libx264", flush=True)
+        if destination.exists():
+            destination.unlink()
+        encoder, use_gpu = "libx264", False
+        command = _build_command(
+            ffmpeg, source, destination, start_seconds, duration_seconds,
+            width, height, crf, preset, encoder, use_gpu,
+        )
+        return_code, stderr = run(command)
 
-    stderr = process.stderr.read().strip() if process.stderr else ""
-    return_code = process.wait()
     if return_code != 0:
         error = stderr or "FFmpeg exited with an unknown error"
         print(f"[ENCODING] FAILED: {error}", flush=True)
