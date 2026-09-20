@@ -66,61 +66,38 @@ def render_clip(
     destination.parent.mkdir(parents=True, exist_ok=True)
 
     command = [
-        ffmpeg,
-        "-y",
-        "-ss",
-        str(start_seconds),
-        "-i",
-        str(source),
-        "-t",
-        str(duration_seconds),
-        "-vf",
-        build_vertical_filter(width, height),
-        "-c:v",
-        "libx264",
-        "-preset",
-        preset,
-        "-crf",
-        str(crf),
-        "-c:a",
-        "aac",
-        "-movflags",
-        "+faststart",
-        str(destination),
+        ffmpeg, "-y", "-ss", str(start_seconds), "-i", str(source),
+        "-t", str(duration_seconds), "-vf", build_vertical_filter(width, height),
+        "-c:v", "libx264", "-preset", preset, "-crf", str(crf),
+        "-c:a", "aac", "-movflags", "+faststart", str(destination),
     ]
 
-    if progress_callback:
-        progress_callback(
-            {
-                "stage": "encoding",
-                "status": "starting",
-                "input": str(source),
-                "output": str(destination),
-                "start_seconds": start_seconds,
-                "duration_seconds": duration_seconds,
-            }
-        )
-
-    process = subprocess.run(
-        command,
-        capture_output=True,
-        text=True,
-        check=False,
+    print(
+        f"[ENCODING] Starting | clip start={start_seconds}s | duration={duration_seconds}s",
+        flush=True,
     )
+    print(f"[ENCODING] Input: {source}", flush=True)
+    print(f"[ENCODING] Output: {destination}", flush=True)
+
+    if progress_callback:
+        progress_callback({
+            "stage": "encoding", "status": "starting", "input": str(source),
+            "output": str(destination), "start_seconds": start_seconds,
+            "duration_seconds": duration_seconds,
+        })
+
+    process = subprocess.run(command, capture_output=True, text=True, check=False)
 
     if process.returncode != 0:
         error = process.stderr.strip() or "FFmpeg exited with an unknown error"
+        print(f"[ENCODING] FAILED: {error}", flush=True)
         raise RendererError(error)
 
+    print(f"[ENCODING] Complete: {destination}", flush=True)
     if progress_callback:
-        progress_callback(
-            {
-                "stage": "encoding",
-                "status": "complete",
-                "output": str(destination),
-                "start_seconds": start_seconds,
-                "duration_seconds": duration_seconds,
-            }
-        )
+        progress_callback({
+            "stage": "encoding", "status": "complete", "output": str(destination),
+            "start_seconds": start_seconds, "duration_seconds": duration_seconds,
+        })
 
     return destination
