@@ -38,20 +38,26 @@ async def upload_clips(
 
     async def notify(payload: dict[str, Any]) -> None:
         if progress_callback:
-            result = progress_callback({"job_id": job_id, "total_clips": total, **payload})
+            result = progress_callback(
+                {"job_id": job_id, "total_clips": total, **payload}
+            )
             if result is not None:
                 await result
 
     messages: list[Any] = []
     for index, clip_path in enumerate(clip_paths, start=1):
         caption = caption_template.format(index=index, total=total)
+
+        async def clip_notify(payload: dict[str, Any], clip_index: int = index) -> None:
+            await notify({"clip": clip_index, **payload})
+
         message = await upload_clip(
             client,
             channel,
             clip_path,
             caption=caption,
             retries=retries,
-            progress_callback=notify,
+            progress_callback=clip_notify,
         )
         messages.append(message)
         job_manager.update(
@@ -59,15 +65,9 @@ async def upload_clips(
             current_clip=index,
             progress=index * 100 / total,
         )
-        await notify(
-            {
-                "stage": JobStage.UPLOADING.value,
-                "status": "complete",
-                "clip": index,
-                "total_clips": total,
-                "path": str(clip_path),
-            }
-        )
+
+        # upload_clip already emits the completion event. Do not emit another
+        # completion event here, otherwise the reporter counts each clip twice.
 
     job_manager.update(
         job_id,
