@@ -66,21 +66,14 @@ async def upload_clips(
             progress=index * 100 / total,
         )
 
-        # upload_clip already emits the completion event. Do not emit another
-        # completion event here, otherwise the reporter counts each clip twice.
+        # upload_clip already emits the completion event for this clip.
+        # Do not emit another completion event here, otherwise the reporter
+        # can count the same clip twice.
 
     job_manager.update(
         job_id,
         stage=JobStage.COMPLETED,
         progress=100.0,
         current_clip=total,
-    )
-    await notify(
-        {
-            "stage": JobStage.COMPLETED.value,
-            "status": "complete",
-            "clip": total,
-            "total_clips": total,
-        }
     )
     return messages
