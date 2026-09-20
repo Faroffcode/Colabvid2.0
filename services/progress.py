@@ -14,6 +14,7 @@ class PipelineProgress:
     encoding_percent: int = 0
     uploading_clip: str = "-"
     upload_percent: int = 0
+    upload_speed: str = "-"
     waiting: int = 0
     completed: int = 0
     total: int = 0
@@ -37,7 +38,8 @@ def format_pipeline_status(progress: PipelineProgress) -> str:
         f"📊 Progress: {progress.encoding_percent}%\n\n"
         "📤 **UPLOADING**\n"
         f"🎞️ Clip: {progress.uploading_clip}\n"
-        f"📊 Progress: {progress.upload_percent}%\n\n"
+        f"📊 Progress: {progress.upload_percent}%\n"
+        f"⚡ Speed: {progress.upload_speed}\n\n"
         "📦 **QUEUE**\n"
         f"⏳ Waiting: {progress.waiting}\n"
         f"✅ Completed: {progress.completed}/{progress.total}\n\n"
