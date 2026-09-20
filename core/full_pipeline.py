@@ -114,6 +114,16 @@ async def run_full_pipeline(
                 retries=retries,
             )
 
+        # upload_clip returns only after Telegram confirms a successful upload.
+        # Delete the local clip only after that successful return. If uploading
+        # fails, this line is never reached and the file remains for debugging
+        # or retry handling.
+        try:
+            clip.unlink()
+            print(f"[PIPELINE] Deleted uploaded clip: {clip}", flush=True)
+        except FileNotFoundError:
+            print(f"[PIPELINE] Clip already removed: {clip}", flush=True)
+
         job_manager.update(
             job_id,
             stage=JobStage.COMPLETED,
