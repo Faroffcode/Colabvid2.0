@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import re
 from pathlib import Path
 from urllib.parse import urlparse
 from uuid import uuid4
@@ -21,6 +22,7 @@ DEFAULT_CLIP_COUNT = 5
 
 def register_handlers(client, *, channel_id: int, job_manager: JobManager) -> None:
     """Register Telegram handlers using the authenticated Telethon client."""
+    pending_urls: dict[int, str] = {}
 
     @client.on(events.NewMessage(pattern=r"^/start$"))
     async def start_handler(event):
@@ -35,7 +37,34 @@ def register_handlers(client, *, channel_id: int, job_manager: JobManager) -> No
         text = event.raw_text.strip()
         if text.startswith("/"):
             return
-        if not text.startswith(("http://", "https://")):
+
+        conversation_key = event.chat_id or event.sender_id
+
+        if text.startswith(("http://", "https://")):
+            pending_urls[conversation_key] = text
+            await event.respond(
+                "📝 **Custom file name**\n\n"
+                "Send the name you want to use for this video.\n"
+                "Example: `My Movie`\n\n"
+                "Send `/cancel` to cancel."
+            )
+            return
+
+        if conversation_key not in pending_urls:
+            return
+
+        if text.lower() == "/cancel":
+            pending_urls.pop(conversation_key, None)
+            await event.respond("❌ File-name request cancelled.")
+            return
+
+        source_url = pending_urls.pop(conversation_key)
+        file_name = _clean_file_name(text)
+        if not file_name:
+            await event.respond(
+                "⚠️ Please send a valid file name, or send `/cancel` to cancel."
+            )
+            pending_urls[conversation_key] = source_url
             return
 
         await _start_url_job(
@@ -43,20 +72,27 @@ def register_handlers(client, *, channel_id: int, job_manager: JobManager) -> No
             client=client,
             channel_id=channel_id,
             job_manager=job_manager,
-            source_url=text,
+            source_url=source_url,
+            file_name=file_name,
         )
 
 
-async def _start_url_job(event, *, client, channel_id: int, job_manager: JobManager, source_url: str) -> None:
+async def _start_url_job(
+    event,
+    *,
+    client,
+    channel_id: int,
+    job_manager: JobManager,
+    source_url: str,
+    file_name: str,
+) -> None:
     """Start one URL job and keep all progress in one Telegram message."""
     job_id = uuid4().hex[:12]
-    parsed_name = Path(urlparse(source_url).path).name or f"video_{job_id}"
-    file_name = Path(parsed_name).stem[:80] or f"video_{job_id}"
 
     reporter = TelegramProgressReporter(event)
     await reporter.start(file_name=file_name, total=DEFAULT_CLIP_COUNT)
     loop = asyncio.get_running_loop()
-    callback = TelegramProgressReporter.callback(reporter, loop)
+    callback = reporter.callback(loop)
 
     job_manager.create(
         job_id,
@@ -83,3 +119,10 @@ async def _start_url_job(event, *, client, channel_id: int, job_manager: JobMana
         await reporter.finish({"stage": "completed"})
     except Exception as exc:
         await reporter.finish({"stage": "failed", "error": str(exc)})
+
+
+def _clean_file_name(value: str) -> str:
+    """Normalize a user-provided filename into a safe display/storage name."""
+    cleaned = re.sub(r"[\\/:*?\"<>|\n\r\t]", " ", value)
+    cleaned = re.sub(r"\s+", " ", cleaned).strip(" .")
+    return cleaned[:80]
