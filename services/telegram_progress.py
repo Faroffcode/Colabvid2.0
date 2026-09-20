@@ -6,6 +6,8 @@ import asyncio
 import time
 from typing import Any
 
+from telethon.errors import MessageNotModifiedError
+
 from services.progress import PipelineProgress, format_pipeline_status
 
 
@@ -21,15 +23,15 @@ class TelegramProgressReporter:
         self._lock = asyncio.Lock()
         self._completed_upload_clips: set[int] = set()
         self._transfer_samples: dict[str, tuple[int, float]] = {}
+        self._last_text = ""
 
     async def start(self, *, file_name: str, total: int = 0) -> Any:
         """Create the only status message used by this reporter."""
         self.progress.file_name = file_name
         self.progress.total = total
-        self.message = await self.event.respond(
-            format_pipeline_status(self.progress),
-            parse_mode="md",
-        )
+        text = format_pipeline_status(self.progress)
+        self.message = await self.event.respond(text, parse_mode="md")
+        self._last_text = text
         self._last_render = time.monotonic()
         return self.message
 
@@ -55,10 +57,17 @@ class TelegramProgressReporter:
             now = time.monotonic()
             if not force and now - self._last_render < self.min_interval:
                 return
-            await self.message.edit(
-                format_pipeline_status(self.progress),
-                parse_mode="md",
-            )
+
+            text = format_pipeline_status(self.progress)
+            if text == self._last_text:
+                self._last_render = now
+                return
+
+            try:
+                await self.message.edit(text, parse_mode="md")
+            except MessageNotModifiedError:
+                pass
+            self._last_text = text
             self._last_render = now
 
     async def finish(self, payload: dict[str, Any] | None = None) -> None:
@@ -90,18 +99,27 @@ class TelegramProgressReporter:
 
         elif stage == "encoding":
             clip = payload.get("clip")
-            total_clips = payload.get("total_clips")
+            total_clips = payload.get("total_clips") or self.progress.total
+            start = payload.get("start_seconds")
+            duration = payload.get("duration_seconds", 0)
+
+            # The renderer supplies the clip's start and duration but not its
+            # index. Derive the index so the unified status never shows '-'.
+            if clip is None and start is not None and duration:
+                try:
+                    clip = int(float(start) / float(duration)) + 1
+                except (TypeError, ValueError, ZeroDivisionError):
+                    clip = None
+
             if clip is not None:
-                self.progress.encoding_clip = (
-                    f"{clip}/{total_clips or self.progress.total}"
-                )
-            if payload.get("start_seconds") is not None:
-                start = payload["start_seconds"]
-                duration = payload.get("duration_seconds", 0)
-                self.progress.encoding_range = f"{start}s → {start + duration}s"
-            if status == "complete" and clip and total_clips:
-                self.progress.encoding_percent = round(
-                    int(clip) * 100 / int(total_clips)
+                self.progress.encoding_clip = f"{clip}/{total_clips or '-'}"
+
+            if start is not None:
+                self.progress.encoding_range = f"{start}s → {float(start) + float(duration)}s"
+
+            if payload.get("percent") is not None:
+                self.progress.encoding_percent = max(
+                    0, min(100, round(float(payload["percent"])))
                 )
 
         elif stage == "uploading":
