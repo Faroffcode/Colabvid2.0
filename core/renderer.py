@@ -25,6 +25,27 @@ def ensure_ffmpeg() -> str:
     return executable
 
 
+def detect_video_encoder(ffmpeg: str) -> tuple[str, bool]:
+    """Use NVIDIA NVENC when available, otherwise fall back to libx264."""
+    try:
+        result = subprocess.run(
+            [ffmpeg, "-hide_banner", "-encoders"],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        encoders = result.stdout or ""
+    except OSError:
+        encoders = ""
+
+    if "h264_nvenc" in encoders:
+        print("[ENCODING] GPU encoder detected: h264_nvenc", flush=True)
+        return "h264_nvenc", True
+
+    print("[ENCODING] GPU encoder unavailable; using CPU libx264", flush=True)
+    return "libx264", False
+
+
 def build_vertical_filter(width: int = 1080, height: int = 1920) -> str:
     """Build a scale-and-pad filter that preserves the complete video frame."""
     if width <= 0 or height <= 0:
@@ -49,7 +70,7 @@ def render_clip(
     preset: str = "medium",
     progress_callback: ProgressCallback | None = None,
 ) -> Path:
-    """Render one padded vertical clip using FFmpeg with live progress events."""
+    """Render one padded vertical clip with automatic GPU acceleration when available."""
     source = Path(input_path)
     destination = Path(output_path)
 
@@ -63,18 +84,26 @@ def render_clip(
         raise ValueError("crf must be between 0 and 51")
 
     ffmpeg = ensure_ffmpeg()
+    encoder, use_gpu = detect_video_encoder(ffmpeg)
     destination.parent.mkdir(parents=True, exist_ok=True)
+
+    video_options = ["-c:v", encoder]
+    if use_gpu:
+        video_options += ["-preset", "p4", "-cq", str(crf)]
+    else:
+        video_options += ["-preset", preset, "-crf", str(crf)]
 
     command = [
         ffmpeg, "-y", "-ss", str(start_seconds), "-i", str(source),
         "-t", str(duration_seconds), "-vf", build_vertical_filter(width, height),
-        "-c:v", "libx264", "-preset", preset, "-crf", str(crf),
+        *video_options,
         "-c:a", "aac", "-progress", "pipe:1", "-nostats",
         "-movflags", "+faststart", str(destination),
     ]
 
+    mode = "GPU/NVENC" if use_gpu else "CPU/libx264"
     print(
-        f"[ENCODING] Starting | clip start={start_seconds}s | duration={duration_seconds}s",
+        f"[ENCODING] Starting ({mode}) | clip start={start_seconds}s | duration={duration_seconds}s",
         flush=True,
     )
     print(f"[ENCODING] Input: {source}", flush=True)
@@ -84,7 +113,8 @@ def render_clip(
         progress_callback({
             "stage": "encoding", "status": "starting", "input": str(source),
             "output": str(destination), "start_seconds": start_seconds,
-            "duration_seconds": duration_seconds, "percent": 0,
+            "duration_seconds": duration_seconds, "encoder": encoder, "gpu": use_gpu,
+            "percent": 0,
         })
 
     process = subprocess.Popen(
@@ -113,7 +143,8 @@ def render_clip(
                     progress_callback({
                         "stage": "encoding", "status": "progress",
                         "percent": percent, "start_seconds": start_seconds,
-                        "duration_seconds": duration_seconds,
+                        "duration_seconds": duration_seconds, "encoder": encoder,
+                        "gpu": use_gpu,
                     })
 
     stderr = process.stderr.read().strip() if process.stderr else ""
@@ -130,7 +161,7 @@ def render_clip(
         progress_callback({
             "stage": "encoding", "status": "complete", "output": str(destination),
             "start_seconds": start_seconds, "duration_seconds": duration_seconds,
-            "percent": 100,
+            "encoder": encoder, "gpu": use_gpu, "percent": 100,
         })
 
     return destination
