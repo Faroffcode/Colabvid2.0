@@ -2,9 +2,13 @@
 
 from __future__ import annotations
 
+import json
+import subprocess
 import time
 from pathlib import Path
 from typing import Any, Awaitable, Callable
+
+from telethon.tl.types import DocumentAttributeVideo
 
 
 ProgressCallback = Callable[[dict[str, Any]], Awaitable[None] | None]
@@ -12,6 +16,45 @@ ProgressCallback = Callable[[dict[str, Any]], Awaitable[None] | None]
 
 class UploadError(RuntimeError):
     """Raised when a Telegram upload cannot be completed."""
+
+
+def _video_attributes(path: Path) -> DocumentAttributeVideo:
+    """Read video metadata so Telegram receives duration and dimensions."""
+    command = [
+        "ffprobe",
+        "-v",
+        "error",
+        "-select_streams",
+        "v:0",
+        "-show_entries",
+        "stream=width,height,duration",
+        "-of",
+        "json",
+        str(path),
+    ]
+    try:
+        result = subprocess.run(
+            command,
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        streams = json.loads(result.stdout).get("streams", [])
+        if not streams:
+            raise ValueError("No video stream found")
+        stream = streams[0]
+        width = int(stream.get("width") or 1080)
+        height = int(stream.get("height") or 1920)
+        duration = max(1, round(float(stream.get("duration") or 0)))
+    except (OSError, ValueError, TypeError, json.JSONDecodeError, subprocess.CalledProcessError) as exc:
+        raise UploadError(f"Could not read video metadata for {path}: {exc}") from exc
+
+    return DocumentAttributeVideo(
+        duration=duration,
+        w=width,
+        h=height,
+        supports_streaming=True,
+    )
 
 
 async def upload_clip(
@@ -23,12 +66,14 @@ async def upload_clip(
     progress_callback: ProgressCallback | None = None,
     retries: int = 2,
 ) -> Any:
-    """Upload one clip to Telegram with retry support."""
+    """Upload one clip to Telegram with explicit video metadata and retry support."""
     path = Path(clip_path)
     if not path.is_file():
         raise UploadError(f"Clip does not exist: {path}")
     if retries < 0:
         raise ValueError("retries cannot be negative")
+
+    attributes = _video_attributes(path)
 
     async def notify(payload: dict[str, Any]) -> None:
         if progress_callback:
@@ -48,6 +93,9 @@ async def upload_clip(
                 channel,
                 str(path),
                 caption=caption,
+                force_document=False,
+                supports_streaming=True,
+                attributes=[attributes],
                 progress_callback=lambda sent, total: _notify_progress(
                     progress_callback, sent, total, path
                 ),
