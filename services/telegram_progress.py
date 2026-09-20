@@ -20,6 +20,7 @@ class TelegramProgressReporter:
         self._last_render = 0.0
         self._lock = asyncio.Lock()
         self._completed_upload_clips: set[int] = set()
+        self._transfer_samples: dict[str, tuple[int, float]] = {}
 
     async def start(self, *, file_name: str, total: int = 0) -> Any:
         """Create the only status message used by this reporter."""
@@ -33,12 +34,7 @@ class TelegramProgressReporter:
         return self.message
 
     def callback(self, loop: Any | None = None):
-        """Return the async progress callback expected by the pipeline.
-
-        The pipeline may invoke this callback from a worker thread. The
-        caller is responsible for scheduling the returned awaitable on the
-        Telegram event loop.
-        """
+        """Return the async progress callback expected by the pipeline."""
 
         async def _callback(payload: dict[str, Any]) -> None:
             await self.update(payload)
@@ -74,6 +70,7 @@ class TelegramProgressReporter:
     def _apply_payload(self, payload: dict[str, Any]) -> None:
         stage = str(payload.get("stage", ""))
         status = str(payload.get("status", ""))
+        now = time.monotonic()
 
         if stage == "downloading":
             downloaded = int(payload.get("downloaded_bytes") or 0)
@@ -87,6 +84,9 @@ class TelegramProgressReporter:
                 )
             else:
                 self.progress.download_size = f"{_size(downloaded)} / ?"
+            self.progress.download_speed = _speed_text(
+                self._transfer_samples, "download", downloaded, now
+            )
 
         elif stage == "encoding":
             clip = payload.get("clip")
@@ -110,6 +110,13 @@ class TelegramProgressReporter:
                 self.progress.uploading_clip = path.rsplit("/", 1)[-1]
             if payload.get("percent") is not None:
                 self.progress.upload_percent = round(float(payload["percent"]))
+            if payload.get("sent_bytes") is not None:
+                self.progress.upload_speed = _speed_text(
+                    self._transfer_samples,
+                    "upload",
+                    int(payload.get("sent_bytes") or 0),
+                    now,
+                )
             if status == "complete":
                 clip = payload.get("clip")
                 if clip is not None:
@@ -128,6 +135,24 @@ class TelegramProgressReporter:
             self.progress.retries = int(payload["retries"])
         if payload.get("error"):
             self.progress.error = str(payload["error"])
+
+
+def _speed_text(
+    samples: dict[str, tuple[int, float]],
+    key: str,
+    current_bytes: int,
+    now: float,
+) -> str:
+    """Calculate transfer speed from consecutive progress samples."""
+    previous = samples.get(key)
+    samples[key] = (current_bytes, now)
+    if previous is None:
+        return "-"
+    previous_bytes, previous_time = previous
+    elapsed = now - previous_time
+    if elapsed <= 0 or current_bytes < previous_bytes:
+        return "-"
+    return f"{(current_bytes - previous_bytes) / elapsed / 1024 / 1024:.2f} MB/s"
 
 
 def _size(value: int) -> str:
