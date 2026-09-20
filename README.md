@@ -1,52 +1,96 @@
-# Colabvid 2.0
+# 🎬 Colabvid 2.0
 
-A simple Google Colab Telegram bot for turning videos into vertical clips and uploading them to a Telegram channel.
+<p align="center">
+  <a href="https://colab.research.google.com/github/Faroffcode/Colabvid2.0/blob/main/Colabvid_2.0.ipynb">
+    <img src="https://colab.research.google.com/assets/colab-badge.svg" alt="Open In Colab" />
+  </a>
+</p>
 
-## Planned workflow
+A modular Google Colab Telegram bot for downloading videos, creating vertical clips, and uploading the results to a Telegram channel with unified progress reporting.
 
-1. Send a video URL to the Telegram bot.
-2. Inspect and validate the URL.
-3. Choose a filename, clip duration, and clip count.
-4. Download the source video.
-5. Create 9:16 clips with FFmpeg.
-6. Upload clips to the configured Telegram channel.
-7. Show download, encoding, and upload progress in one message.
+## 🚀 Open in Google Colab
 
-## Google Colab setup
+[![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/Faroffcode/Colabvid2.0/blob/main/Colabvid_2.0.ipynb)
 
-The repository includes `colab_setup.py`, which asks for the required environment values interactively and loads them into the current Colab session.
+Open the notebook directly in Google Colab, run the installation cell, enter your configuration, and start the bot.
 
-Run this in a Colab cell:
+## ✨ Features
+
+- 📥 Download videos from supported direct URLs and Pixeldrain links
+- 🎬 Create 9:16 vertical clips at 1080×1920 resolution
+- 🖼️ Preserve the complete video frame using scale and padding
+- 📤 Upload rendered clips to a Telegram channel
+- 📊 Show download, encoding, and upload progress in one message
+- 🔁 Retry failed uploads
+- ☁️ Designed for Google Colab
+- 🧩 Modular project structure
+
+## 🛠️ Google Colab setup
+
+### Using the Colab notebook
+
+1. Click the **Open in Colab** button above.
+2. Run the installation cell.
+3. Run the setup cell.
+4. Enter your Telegram configuration when prompted.
+5. Run the bot startup cell.
+
+### Manual setup
 
 ```python
 !git clone https://github.com/Faroffcode/Colabvid2.0.git
 %cd Colabvid2.0
 !pip install -r requirements.txt
 !python colab_setup.py
-```
-
-Enter these values when prompted:
-
-- `COLABVID_API_ID`
-- `COLABVID_API_HASH`
-- `COLABVID_BOT_TOKEN`
-- `COLABVID_CHANNEL_ID`
-
-The API hash and bot token are entered using hidden input. The values are loaded only into the active Colab session and are not written into the repository.
-
-Start the bot after setup:
-
-```python
 !python app.py
 ```
 
-## Project goals
+## 🔐 Required configuration
 
-- Small, readable Python modules
-- Clear separation between Telegram, downloading, rendering, and uploading
-- Retry and resume support
-- Google Colab compatibility
+The setup script asks for these values in one place:
 
-## Status
+```text
+COLABVID_API_ID
+COLABVID_API_HASH
+COLABVID_BOT_TOKEN
+COLABVID_CHANNEL_ID
+```
 
-🚧 Initial project setup
+The API hash and bot token use hidden input. Keep all credentials private and never commit them to GitHub.
+
+## 📁 Project structure
+
+```text
+Colabvid2.0/
+├── app.py
+├── config.py
+├── colab_setup.py
+├── Colabvid_2.0.ipynb
+├── requirements.txt
+├── bot/
+├── core/
+└── services/
+```
+
+## ▶️ Start the bot
+
+```bash
+python app.py
+```
+
+Send a supported video URL to the Telegram bot to begin processing.
+
+## ⚙️ Current defaults
+
+- Clip duration: 60 seconds
+- Clip count: 5
+- Output size: 1080×1920
+- Upload retries: 2
+
+## 👨‍💻 Developer
+
+**Imtiaz Haque (Faroff)**
+
+## 📄 License
+
+Add a license before distributing the project publicly.
