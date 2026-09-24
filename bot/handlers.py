@@ -23,8 +23,14 @@ MIN_CLIP_COUNT = 1
 MAX_CLIP_COUNT = 100
 
 
-def register_handlers(client, *, channel_id: int, job_manager: JobManager) -> None:
-    """Register Telegram handlers using the authenticated Telethon client."""
+def register_handlers(
+    client,
+    *,
+    upload_client,
+    channel_id: int,
+    job_manager: JobManager,
+) -> None:
+    """Register Telethon handlers while using Pyrogram for video uploads."""
     pending: dict[int, dict[str, Any]] = {}
 
     @client.on(events.NewMessage(pattern=r"^/start$"))
@@ -118,6 +124,7 @@ def register_handlers(client, *, channel_id: int, job_manager: JobManager) -> No
             await _start_url_job(
                 event,
                 client=client,
+                upload_client=upload_client,
                 channel_id=channel_id,
                 job_manager=job_manager,
                 source_url=setup["source_url"],
@@ -133,6 +140,7 @@ async def _start_url_job(
     event,
     *,
     client,
+    upload_client,
     channel_id: int,
     job_manager: JobManager,
     source_url: str,
@@ -140,7 +148,7 @@ async def _start_url_job(
     clip_duration: float,
     clip_count: int,
 ) -> None:
-    """Start one URL job and keep all progress in one Telegram status message."""
+    """Start one URL job with Telethon notifications and Pyrogram uploads."""
     job_id = uuid4().hex[:12]
 
     reporter = TelegramProgressReporter(event)
@@ -158,7 +166,7 @@ async def _start_url_job(
 
     try:
         await run_full_pipeline(
-            client=client,
+            client=upload_client,
             channel=channel_id,
             job_manager=job_manager,
             job_id=job_id,
