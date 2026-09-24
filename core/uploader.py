@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import subprocess
+import tempfile
 import time
 from pathlib import Path
 from typing import Any, Awaitable, Callable
@@ -34,8 +35,29 @@ def _video_metadata(path: Path) -> dict[str, int]:
         raise UploadError(f"Could not read video metadata for {path}: {exc}") from exc
 
 
+def _create_thumbnail(video: Path, duration: int) -> Path:
+    """Extract a JPEG thumbnail compatible with Telegram's thumbnail limits."""
+    handle = tempfile.NamedTemporaryFile(prefix="colabvid_thumb_", suffix=".jpg", delete=False)
+    thumb = Path(handle.name)
+    handle.close()
+    timestamp = min(max(duration // 10, 0), 5)
+    command = [
+        "ffmpeg", "-y", "-ss", str(timestamp), "-i", str(video),
+        "-frames:v", "1", "-vf", "scale=320:320:force_original_aspect_ratio=decrease",
+        "-q:v", "3", str(thumb),
+    ]
+    try:
+        subprocess.run(command, capture_output=True, text=True, check=True)
+        if not thumb.is_file() or thumb.stat().st_size == 0:
+            raise UploadError("FFmpeg created an empty thumbnail")
+        return thumb
+    except (OSError, subprocess.CalledProcessError) as exc:
+        thumb.unlink(missing_ok=True)
+        raise UploadError(f"Could not create thumbnail for {video}: {exc}") from exc
+
+
 async def upload_clip(client: Any, channel: Any, clip_path: str | Path, *, caption: str | None = None, progress_callback: ProgressCallback | None = None, retries: int = 2) -> Any:
-    """Upload one video using a connected Pyrogram Client."""
+    """Upload one video using Pyrogram, including a generated thumbnail."""
     path = Path(clip_path)
     if not path.is_file():
         raise UploadError(f"Clip does not exist: {path}")
@@ -72,28 +94,30 @@ async def upload_clip(client: Any, channel: Any, clip_path: str | Path, *, capti
         started = time.monotonic()
         last_report = 0.0
         last_sent = 0
-
-        def progress(current: int, total: int, *_: Any) -> None:
-            nonlocal last_report, last_sent
-            now = time.monotonic()
-            if current < total and now - last_report < 0.75:
-                return
-            elapsed = max(now - started, 0.001)
-            speed = (current - last_sent) / max(now - last_report, 0.001) if last_report else current / elapsed
-            last_report = now
-            last_sent = current
-            dispatch({
-                "stage": "uploading", "status": "progress", "path": str(path),
-                "sent_bytes": current, "total_bytes": total,
-                "percent": round(current * 100 / total, 1) if total else 0.0,
-                "speed_bytes": speed, "elapsed_seconds": elapsed,
-            })
-
+        thumb: Path | None = None
         try:
-            print(f"[UPLOAD] Pyrogram starting clip={path.name} attempt={attempt + 1}/{retries + 1}", flush=True)
+            thumb = _create_thumbnail(path, metadata["duration"])
+
+            def progress(current: int, total: int, *_: Any) -> None:
+                nonlocal last_report, last_sent
+                now = time.monotonic()
+                if current < total and now - last_report < 0.75:
+                    return
+                elapsed = max(now - started, 0.001)
+                speed = (current - last_sent) / max(now - last_report, 0.001) if last_report else current / elapsed
+                last_report = now
+                last_sent = current
+                dispatch({
+                    "stage": "uploading", "status": "progress", "path": str(path),
+                    "sent_bytes": current, "total_bytes": total,
+                    "percent": round(current * 100 / total, 1) if total else 0.0,
+                    "speed_bytes": speed, "elapsed_seconds": elapsed,
+                })
+
+            print(f"[UPLOAD] Pyrogram starting clip={path.name} attempt={attempt + 1}/{retries + 1} thumbnail={thumb.name}", flush=True)
             await notify({"stage": "uploading", "status": "starting", "path": str(path), "attempt": attempt + 1})
             message = await client.send_video(
-                chat_id=channel, video=str(path), caption=caption,
+                chat_id=channel, video=str(path), thumb=str(thumb), caption=caption,
                 duration=metadata["duration"], width=metadata["width"], height=metadata["height"],
                 supports_streaming=True, progress=progress,
             )
@@ -106,5 +130,8 @@ async def upload_clip(client: Any, channel: Any, clip_path: str | Path, *, capti
             last_error = exc
             print(f"[UPLOAD] FAILED clip={path.name} attempt={attempt + 1}: {type(exc).__name__}: {exc}", flush=True)
             await notify({"stage": "uploading", "status": "retry", "path": str(path), "attempt": attempt + 1, "error": str(exc)})
+        finally:
+            if thumb is not None:
+                thumb.unlink(missing_ok=True)
 
     raise UploadError(f"Upload failed for {path}: {last_error}") from last_error
