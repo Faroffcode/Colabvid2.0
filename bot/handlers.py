@@ -32,6 +32,7 @@ def register_handlers(
 ) -> None:
     """Register Telethon handlers while using Pyrogram for video uploads."""
     pending: dict[int, dict[str, Any]] = {}
+    destination = {"channel_id": channel_id}
 
     @client.on(events.NewMessage(pattern=r"^/start$"))
     async def start_handler(event):
@@ -41,6 +42,50 @@ def register_handlers(
     async def help_handler(event):
         await event.respond(HELP_MESSAGE, parse_mode="md")
 
+    @client.on(events.NewMessage(pattern=r"^/setchannel$"))
+    async def set_channel_handler(event):
+        conversation_key = event.chat_id or event.sender_id
+        pending[conversation_key] = {"step": "channel_forward"}
+        await event.respond(
+            "📢 **Set upload destination**\n\n"
+            "Forward any message from the destination channel to me.\n"
+            "I will extract the channel ID automatically.\n\n"
+            "Send `/cancel` to cancel."
+        )
+
+    @client.on(events.NewMessage(func=lambda event: bool(event.message and event.message.fwd_from)))
+    async def forwarded_channel_handler(event):
+        conversation_key = event.chat_id or event.sender_id
+        setup = pending.get(conversation_key)
+        if not setup or setup.get("step") != "channel_forward":
+            return
+
+        try:
+            forwarded_chat = await event.get_forward_from()
+            extracted_id = getattr(forwarded_chat, "id", None)
+            title = getattr(forwarded_chat, "title", None) or "Unknown channel"
+
+            if extracted_id is None or getattr(forwarded_chat, "broadcast", False) is False:
+                await event.respond(
+                    "⚠️ I could not identify a channel from that forwarded message. "
+                    "Please forward a post directly from the destination channel."
+                )
+                return
+
+            destination["channel_id"] = int(extracted_id)
+            pending.pop(conversation_key, None)
+            await event.respond(
+                "✅ **Upload destination updated**\n\n"
+                f"📢 Channel: `{title}`\n"
+                f"🆔 Channel ID: `{destination['channel_id']}`\n\n"
+                "Future uploads will use this destination."
+            )
+        except Exception as exc:
+            await event.respond(
+                "⚠️ Could not extract the channel ID from that forward.\n"
+                f"`{exc}`"
+            )
+
     @client.on(events.NewMessage(func=lambda event: bool(event.raw_text)))
     async def text_handler(event):
         text = event.raw_text.strip()
@@ -48,7 +93,7 @@ def register_handlers(
 
         if text.lower() == "/cancel":
             if pending.pop(conversation_key, None) is not None:
-                await event.respond("❌ Video setup cancelled.")
+                await event.respond("❌ Operation cancelled.")
             return
 
         if text.startswith("/"):
@@ -125,7 +170,7 @@ def register_handlers(
                 event,
                 client=client,
                 upload_client=upload_client,
-                channel_id=channel_id,
+                channel_id=destination["channel_id"],
                 job_manager=job_manager,
                 source_url=setup["source_url"],
                 file_name=setup["file_name"],
