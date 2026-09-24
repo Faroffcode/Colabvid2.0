@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import re
+import subprocess
 from typing import Any
 from uuid import uuid4
 
@@ -100,9 +101,19 @@ def register_handlers(
             return
 
         if text.startswith(("http://", "https://")):
-            pending[conversation_key] = {"source_url": text, "step": "filename"}
+            await event.respond("🔎 Detecting video information... Please wait.")
+            metadata = await _detect_video_metadata(text)
+            pending[conversation_key] = {
+                "source_url": text,
+                "step": "filename",
+                "source_title": metadata.get("title"),
+                "source_duration": metadata.get("duration"),
+            }
+
+            details = _format_video_metadata(metadata)
             await event.respond(
                 "📝 **Custom file name**\n\n"
+                f"{details}\n\n"
                 "Send the name you want to use for this video.\n"
                 "Example: `My Movie`\n\n"
                 "Send `/cancel` to cancel."
@@ -122,10 +133,17 @@ def register_handlers(
                 return
             setup["file_name"] = file_name
             setup["step"] = "duration"
+            source_duration = setup.get("source_duration")
+            source_hint = (
+                f"\nDetected source duration: `{_format_seconds(source_duration)}`\n"
+                if source_duration
+                else "\n⚠️ Source duration could not be detected automatically.\n"
+            )
             await event.respond(
                 "⏱️ **Clip duration**\n\n"
                 "How many seconds should each clip contain?\n"
-                "Example: `60`\n\n"
+                "Example: `60`\n"
+                f"{source_hint}\n"
                 f"Allowed range: {MIN_CLIP_DURATION:g}–{MAX_CLIP_DURATION:g} seconds."
             )
             return
@@ -162,7 +180,8 @@ def register_handlers(
             await event.respond(
                 "✅ **Video settings received**\n\n"
                 f"📁 File: `{setup['file_name']}`\n"
-                f"⏱️ Duration: `{setup['clip_duration']:g}s`\n"
+                f"🎬 Source: `{_format_seconds(setup.get('source_duration'))}`\n"
+                f"⏱️ Clip duration: `{setup['clip_duration']:g}s`\n"
                 f"🎞️ Clips: `{clip_count}`\n\n"
                 "🚀 Starting pipeline..."
             )
@@ -179,6 +198,82 @@ def register_handlers(
             )
 
     return None
+
+
+async def _detect_video_metadata(url: str) -> dict[str, Any]:
+    """Detect title and duration without downloading the complete video."""
+    return await asyncio.to_thread(_detect_video_metadata_sync, url)
+
+
+def _detect_video_metadata_sync(url: str) -> dict[str, Any]:
+    """Use yt-dlp first, then ffprobe for direct media URLs."""
+    result: dict[str, Any] = {"title": None, "duration": None}
+
+    try:
+        import yt_dlp
+
+        options = {
+            "quiet": True,
+            "no_warnings": True,
+            "skip_download": True,
+            "noplaylist": True,
+            "extract_flat": False,
+        }
+        with yt_dlp.YoutubeDL(options) as ydl:
+            info = ydl.extract_info(url, download=False)
+        if info:
+            result["title"] = info.get("title")
+            duration = info.get("duration")
+            if duration is not None:
+                result["duration"] = float(duration)
+    except Exception:
+        pass
+
+    if result["duration"] is None:
+        try:
+            completed = subprocess.run(
+                [
+                    "ffprobe",
+                    "-v",
+                    "error",
+                    "-show_entries",
+                    "format=duration",
+                    "-of",
+                    "default=noprint_wrappers=1:nokey=1",
+                    url,
+                ],
+                capture_output=True,
+                text=True,
+                timeout=25,
+                check=False,
+            )
+            value = completed.stdout.strip()
+            if value:
+                result["duration"] = float(value)
+        except (OSError, ValueError, subprocess.SubprocessError):
+            pass
+
+    return result
+
+
+def _format_video_metadata(metadata: dict[str, Any]) -> str:
+    title = metadata.get("title") or "Unknown title"
+    duration = _format_seconds(metadata.get("duration"))
+    return f"🎬 Title: `{title[:120]}`\n⏱️ Duration: `{duration}`"
+
+
+def _format_seconds(value: Any) -> str:
+    if value is None:
+        return "Unknown"
+    try:
+        total = max(0, int(round(float(value))))
+    except (TypeError, ValueError):
+        return "Unknown"
+    hours, remainder = divmod(total, 3600)
+    minutes, seconds = divmod(remainder, 60)
+    if hours:
+        return f"{hours:02d}:{minutes:02d}:{seconds:02d}"
+    return f"{minutes:02d}:{seconds:02d}"
 
 
 async def _start_url_job(
