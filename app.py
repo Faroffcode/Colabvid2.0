@@ -1,5 +1,8 @@
 """Colabvid 2.0 application entry point."""
 
+from pathlib import Path
+
+from pyrogram import Client as PyrogramClient
 from telethon import TelegramClient
 
 from bot.handlers import register_handlers
@@ -8,6 +11,8 @@ from services.jobs import JobManager
 
 
 SESSION_NAME = "colabvid2_session"
+PYROGRAM_SESSION_NAME = "colabvid2_uploads"
+PYROGRAM_WORKDIR = Path("/content/colabvid")
 
 
 def main() -> None:
@@ -17,19 +22,39 @@ def main() -> None:
             "COLABVID_CHANNEL_ID is required for uploading rendered clips."
         )
 
-    # API ID and API hash authenticate the Telegram client used for uploads.
+    # Ensure Pyrogram can create its SQLite session database in Colab.
+    PYROGRAM_WORKDIR.mkdir(parents=True, exist_ok=True)
+
+    # Telethon remains responsible for commands and the unified status message.
     client = TelegramClient(SESSION_NAME, settings.api_id, settings.api_hash)
+
+    # Pyrogram is responsible for video uploads and upload progress callbacks.
+    upload_client = PyrogramClient(
+        PYROGRAM_SESSION_NAME,
+        api_id=settings.api_id,
+        api_hash=settings.api_hash,
+        bot_token=settings.bot_token,
+        workdir=str(PYROGRAM_WORKDIR),
+    )
+
     job_manager = JobManager()
     register_handlers(
         client,
+        upload_client=upload_client,
         channel_id=settings.channel_id,
         job_manager=job_manager,
     )
 
-    print("Colabvid 2.0 bot is starting...")
+    print("Starting Pyrogram upload client...")
+    upload_client.start()
+    print("Starting Colabvid 2.0 Telethon bot...")
     client.start(bot_token=settings.bot_token)
-    print("Colabvid 2.0 bot is running.")
-    client.run_until_disconnected()
+    print("Colabvid 2.0 bot is running with Pyrogram uploads.")
+
+    try:
+        client.run_until_disconnected()
+    finally:
+        upload_client.stop()
 
 
 if __name__ == "__main__":
