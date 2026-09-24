@@ -10,7 +10,11 @@ A modular Google Colab Telegram bot for downloading videos, creating vertical cl
 
 > 🧪 **Testing branch:** This README and the Colab instructions use the `upload-speed-test` branch, which contains the current upload-speed testing changes, Pyrogram upload integration, and video thumbnail support.
 
-## 🚀 Open in Google Colab
+## 🚀 Open the updated code in Google Colab
+
+Use this link to open the **latest updated notebook from the `upload-speed-test` branch**:
+
+👉 **[🚀 Open Updated Colab Notebook](https://colab.research.google.com/github/Faroffcode/Colabvid2.0/blob/upload-speed-test/Colabvid_2.0.ipynb)**
 
 [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/Faroffcode/Colabvid2.0/blob/upload-speed-test/Colabvid_2.0.ipynb)
 
@@ -31,9 +35,9 @@ Open the notebook directly in Google Colab, run the installation cell, enter you
 
 ## 🛠️ Google Colab setup
 
-### Using the Colab notebook
+### Using the updated Colab notebook
 
-1. Click the **Open in Colab** button above.
+1. Open the **[Updated Colab Notebook](https://colab.research.google.com/github/Faroffcode/Colabvid2.0/blob/upload-speed-test/Colabvid_2.0.ipynb)**.
 2. Confirm that the notebook is opened from the `upload-speed-test` branch.
 3. Run the installation cell.
 4. Run the setup cell.
