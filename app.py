@@ -1,5 +1,7 @@
 """Colabvid 2.0 application entry point."""
 
+from pathlib import Path
+
 from pyrogram import Client as PyrogramClient
 from telethon import TelegramClient
 
@@ -10,6 +12,7 @@ from services.jobs import JobManager
 
 SESSION_NAME = "colabvid2_session"
 PYROGRAM_SESSION_NAME = "colabvid2_uploads"
+PYROGRAM_WORKDIR = Path("/content/colabvid")
 
 
 def main() -> None:
@@ -18,6 +21,9 @@ def main() -> None:
         raise RuntimeError(
             "COLABVID_CHANNEL_ID is required for uploading rendered clips."
         )
+
+    # Ensure Pyrogram can create its SQLite session database in Colab.
+    PYROGRAM_WORKDIR.mkdir(parents=True, exist_ok=True)
 
     # Telethon remains responsible for commands and the unified status message.
     client = TelegramClient(SESSION_NAME, settings.api_id, settings.api_hash)
@@ -28,7 +34,7 @@ def main() -> None:
         api_id=settings.api_id,
         api_hash=settings.api_hash,
         bot_token=settings.bot_token,
-        workdir="/content/colabvid",
+        workdir=str(PYROGRAM_WORKDIR),
     )
 
     job_manager = JobManager()
