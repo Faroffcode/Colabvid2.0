@@ -62,11 +62,22 @@ def register_handlers(
             return
 
         try:
-            forwarded_chat = await event.get_forward_from()
-            extracted_id = getattr(forwarded_chat, "id", None)
-            title = getattr(forwarded_chat, "title", None) or "Unknown channel"
+            forward_header = event.message.fwd_from
+            forward_peer = getattr(forward_header, "from_id", None)
+            if forward_peer is None:
+                forward_peer = getattr(forward_header, "saved_from_peer", None)
 
-            if extracted_id is None or getattr(forwarded_chat, "broadcast", False) is False:
+            if forward_peer is None:
+                raise ValueError("The forwarded message does not contain a source channel")
+
+            forwarded_chat = await client.get_entity(forward_peer)
+            extracted_id = getattr(forwarded_chat, "id", None)
+            title = getattr(forwarded_chat, "title", None) or getattr(
+                forwarded_chat, "username", None
+            ) or "Unknown channel"
+            is_channel = bool(getattr(forwarded_chat, "broadcast", False))
+
+            if extracted_id is None or not is_channel:
                 await event.respond(
                     "⚠️ I could not identify a channel from that forwarded message. "
                     "Please forward a post directly from the destination channel."
@@ -136,7 +147,7 @@ def register_handlers(
             source_duration = setup.get("source_duration")
             source_hint = (
                 f"\nDetected source duration: `{_format_seconds(source_duration)}`\n"
-                if source_duration
+                if source_duration is not None
                 else "\n⚠️ Source duration could not be detected automatically.\n"
             )
             await event.respond(
