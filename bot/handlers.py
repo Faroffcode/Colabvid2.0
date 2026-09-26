@@ -8,7 +8,7 @@ import subprocess
 from typing import Any
 from uuid import uuid4
 
-from telethon import events
+from telethon import Button, events
 
 from bot.messages import HELP_MESSAGE, START_MESSAGE
 from core.full_pipeline import run_full_pipeline
@@ -21,7 +21,8 @@ DEFAULT_CLIP_COUNT = 5
 MIN_CLIP_DURATION = 1.0
 MAX_CLIP_DURATION = 3600.0
 MIN_CLIP_COUNT = 1
-MAX_CLIP_COUNT = 100
+MAX_CLIP_COUNT = 10000
+EXAMPLE_CLIP_DURATIONS = (30, 45, 60, 90, 120, 300, 600)
 
 
 def register_handlers(
@@ -115,6 +116,39 @@ def register_handlers(
                 f"`{exc}`"
             )
 
+    @client.on(events.CallbackQuery(data=b"colabvid:max"))
+    async def max_clips_handler(event):
+        conversation_key = event.chat_id or event.sender_id
+        setup = pending.get(conversation_key)
+        if not setup or setup.get("step") != "count":
+            await event.answer("This clip setup has expired. Send the URL again.", alert=True)
+            return
+
+        maximum = _max_clip_count(setup.get("source_duration"), setup["clip_duration"])
+        if maximum is None:
+            await event.answer("Source duration is unavailable, so MAX cannot be calculated.", alert=True)
+            return
+
+        pending.pop(conversation_key, None)
+        await event.answer(f"Using maximum: {maximum} clips.")
+        await event.edit(
+            "✅ **Maximum selected**\n\n"
+            f"⏱️ Clip duration: `{setup['clip_duration']:g}s`\n"
+            f"🎞️ Clips: `{maximum}`\n\n"
+            "🚀 Starting pipeline..."
+        )
+        await _start_url_job(
+            event,
+            client=client,
+            upload_client=upload_client,
+            channel_id=destination["channel_id"],
+            job_manager=job_manager,
+            source_url=setup["source_url"],
+            file_name=setup["file_name"],
+            clip_duration=setup["clip_duration"],
+            clip_count=maximum,
+        )
+
     @client.on(events.NewMessage(func=lambda event: bool(event.raw_text)))
     async def text_handler(event):
         text = event.raw_text.strip()
@@ -172,10 +206,50 @@ def register_handlers(
                 "How many seconds should each clip contain?\n"
                 "Example: `60`\n"
                 f"{source_hint}\n"
+                f"{_format_clip_examples(source_duration)}\n"
                 f"Allowed range: {MIN_CLIP_DURATION:g}–{MAX_CLIP_DURATION:g} seconds."
             )
             return
 
+        if step == "duration":
+            duration = _parse_duration(text)
+            if duration is None:
+                await event.respond(
+                    f"⚠️ Enter a number between {MIN_CLIP_DURATION:g} and "
+                    f"{MAX_CLIP_DURATION:g} seconds. Example: `60`"
+                )
+                return
+
+            maximum = _max_clip_count(setup.get("source_duration"), duration)
+            if maximum is not None and maximum < MIN_CLIP_COUNT:
+                await event.respond(
+                    "⚠️ This clip duration is longer than the detected source video. "
+                    "Choose a shorter duration."
+                )
+                return
+
+            setup["clip_duration"] = duration
+            setup["max_clip_count"] = maximum
+            setup["step"] = "count"
+
+            if maximum is not None:
+                await event.respond(
+                    "🎞️ **Number of clips**\n\n"
+                    f"⏱️ Clip duration: `{duration:g}s`\n"
+                    f"🎬 Maximum possible: `{maximum}` full clips\n\n"
+                    "How many clips should be created?\n"
+                    "Examples: `10`, `50`, or the maximum\n\n"
+                    "🔥 Tap **MAX** to create the maximum number.",
+                    buttons=[[Button.inline(f"🔥 MAX ({maximum})", b"colabvid:max")]],
+                )
+            else:
+                await event.respond(
+                    "🎞️ **Number of clips**\n\n"
+                    "How many clips should be created?\n"
+                    "Example: `5`\n\n"
+                    f"Allowed range: {MIN_CLIP_COUNT}–{MAX_CLIP_COUNT}."
+                )
+            return
         if step == "duration":
             duration = _parse_duration(text)
             if duration is None:
@@ -195,14 +269,17 @@ def register_handlers(
             return
 
         if step == "count":
-            clip_count = _parse_clip_count(text)
+            maximum = setup.get("max_clip_count")
+            clip_count = _parse_clip_count(text, maximum=maximum)
             if clip_count is None:
+                limit_text = (
+                    f"1–{maximum}" if maximum is not None
+                    else f"{MIN_CLIP_COUNT}–{MAX_CLIP_COUNT}"
+                )
                 await event.respond(
-                    f"⚠️ Enter a whole number between {MIN_CLIP_COUNT} and "
-                    f"{MAX_CLIP_COUNT}. Example: `5`"
+                    f"⚠️ Enter a whole number between {limit_text}. Example: `5`"
                 )
                 return
-
             setup["clip_count"] = clip_count
             pending.pop(conversation_key, None)
             await event.respond(
@@ -304,6 +381,38 @@ def _format_seconds(value: Any) -> str:
     return f"{minutes:02d}:{seconds:02d}"
 
 
+def _max_clip_count(source_duration: Any, clip_duration: Any) -> int | None:
+    """Return the number of complete clips possible from the source."""
+    if source_duration is None or clip_duration is None:
+        return None
+    try:
+        source = float(source_duration)
+        duration = float(clip_duration)
+    except (TypeError, ValueError):
+        return None
+    if source <= 0 or duration <= 0:
+        return None
+    return int(source // duration)
+
+
+def _format_clip_examples(source_duration: Any) -> str:
+    examples: list[str] = []
+    for duration in EXAMPLE_CLIP_DURATIONS:
+        maximum = _max_clip_count(source_duration, duration)
+        if maximum:
+            examples.append(f"• `{_format_clip_duration_label(duration)}` → **{maximum} clips**")
+    if not examples:
+        return "💡 Maximum clip counts will be shown after you choose a duration."
+    return "💡 **Clip examples:**\n" + "\n".join(examples)
+
+
+def _format_clip_duration_label(seconds: int) -> str:
+    if seconds < 60:
+        return f"{seconds}s"
+    minutes = seconds // 60
+    return f"{minutes} min"
+
+
 async def _start_url_job(
     event,
     *,
@@ -369,11 +478,11 @@ def _parse_duration(value: str) -> float | None:
     return duration
 
 
-def _parse_clip_count(value: str) -> int | None:
+def _parse_clip_count(value: str, *, maximum: int | None = None) -> int | None:
     """Parse and validate a clip count supplied by the user."""
     if not value.isdigit():
         return None
     count = int(value)
-    if not MIN_CLIP_COUNT <= count <= MAX_CLIP_COUNT:
-        return None
+    upper_bound = maximum if maximum is not None else MAX_CLIP_COUNT
+    if not MIN_CLIP_COUNT <= count <= upper_bound:
     return count
