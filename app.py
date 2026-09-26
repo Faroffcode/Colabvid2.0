@@ -37,22 +37,46 @@ def main() -> None:
         workdir=str(PYROGRAM_WORKDIR),
     )
 
-    job_manager = JobManager()
-    register_handlers(
-        client,
-        upload_client=upload_client,
-        channel_id=settings.channel_id,
-        job_manager=job_manager,
-    )
-
     print("Starting Pyrogram upload client...")
     upload_client.start()
-    print("Starting Colabvid 2.0 Telethon bot...")
-    client.start(bot_token=settings.bot_token)
-    print("Colabvid 2.0 bot is running with Pyrogram uploads.")
 
     try:
-        client.run_until_disconnected()
+        # Resolve the destination with the SAME Pyrogram session that performs
+        # uploads. This primes Pyrogram's peer cache and catches an inaccessible
+        # channel before the first video reaches the upload pipeline.
+        try:
+            resolved_chat = upload_client.get_chat(settings.channel_id)
+        except Exception as exc:
+            raise RuntimeError(
+                "Pyrogram cannot access COLABVID_CHANNEL_ID "
+                f"({settings.channel_id}). Make sure this bot is a member/admin "
+                "of the destination channel. Pyrogram error: {type(exc).__name__}: {exc}"
+            ) from exc
+
+        resolved_channel_id = int(resolved_chat.id)
+        print(
+            "Pyrogram destination resolved: "
+            f"{getattr(resolved_chat, 'title', None) or 'Unknown'} "
+            f"({resolved_channel_id})",
+            flush=True,
+        )
+
+        job_manager = JobManager()
+        register_handlers(
+            client,
+            upload_client=upload_client,
+            channel_id=resolved_channel_id,
+            job_manager=job_manager,
+        )
+
+        print("Starting Colabvid 2.0 Telethon bot...")
+        client.start(bot_token=settings.bot_token)
+        print("Colabvid 2.0 bot is running with Pyrogram uploads.")
+
+        try:
+            client.run_until_disconnected()
+        finally:
+            client.disconnect()
     finally:
         upload_client.stop()
 
