@@ -485,4 +485,5 @@ def _parse_clip_count(value: str, *, maximum: int | None = None) -> int | None:
     count = int(value)
     upper_bound = maximum if maximum is not None else MAX_CLIP_COUNT
     if not MIN_CLIP_COUNT <= count <= upper_bound:
+        return None
     return count
