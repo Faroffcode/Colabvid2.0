@@ -50,7 +50,7 @@ def register_handlers(
         await event.respond(
             "📢 **Set upload destination**\n\n"
             "Forward any message from the destination channel to me.\n"
-            "I will extract the channel ID automatically.\n\n"
+            "I will verify that the Pyrogram upload session can access it.\n\n"
             "Send `/cancel` to cancel."
         )
 
@@ -72,9 +72,8 @@ def register_handlers(
 
             forwarded_chat = await client.get_entity(forward_peer)
             extracted_id = getattr(forwarded_chat, "id", None)
-            title = getattr(forwarded_chat, "title", None) or getattr(
-                forwarded_chat, "username", None
-            ) or "Unknown channel"
+            username = getattr(forwarded_chat, "username", None)
+            title = getattr(forwarded_chat, "title", None) or username or "Unknown channel"
             is_channel = bool(getattr(forwarded_chat, "broadcast", False))
 
             if extracted_id is None or not is_channel:
@@ -84,13 +83,31 @@ def register_handlers(
                 )
                 return
 
-            destination["channel_id"] = int(extracted_id)
+            # Resolve with the SAME Pyrogram client that performs send_video().
+            # Telethon resolving a channel does not populate Pyrogram's peer cache.
+            pyrogram_ref = username or int(extracted_id)
+            try:
+                resolved_chat = await upload_client.get_chat(pyrogram_ref)
+            except Exception as exc:
+                await event.respond(
+                    "❌ **Pyrogram cannot access this channel.**\n\n"
+                    f"📢 `{title}`\n"
+                    f"🆔 `{int(extracted_id)}`\n\n"
+                    "Make sure the SAME bot token used by Colabvid is a member/admin "
+                    "of the destination channel, then run `/setchannel` again.\n\n"
+                    f"Pyrogram: `{type(exc).__name__}: {exc}`"
+                )
+                return
+
+            resolved_id = int(resolved_chat.id)
+            destination["channel_id"] = resolved_id
             pending.pop(conversation_key, None)
+            resolved_title = getattr(resolved_chat, "title", None) or title or "Unknown channel"
             await event.respond(
-                "✅ **Upload destination updated**\n\n"
-                f"📢 Channel: `{title}`\n"
-                f"🆔 Channel ID: `{destination['channel_id']}`\n\n"
-                "Future uploads will use this destination."
+                "✅ **Upload destination verified**\n\n"
+                f"📢 Channel: `{resolved_title}`\n"
+                f"🆔 Channel ID: `{resolved_id}`\n\n"
+                "Pyrogram can access this channel. Future uploads will use it."
             )
         except Exception as exc:
             await event.respond(
