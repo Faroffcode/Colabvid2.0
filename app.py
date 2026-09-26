@@ -2,6 +2,7 @@
 
 from pathlib import Path
 
+import pyrogram.utils as pyrogram_utils
 from pyrogram import Client as PyrogramClient
 from telethon import TelegramClient
 
@@ -15,12 +16,38 @@ PYROGRAM_SESSION_NAME = "colabvid2_uploads"
 PYROGRAM_WORKDIR = Path("/content/colabvid")
 
 
+def _patch_pyrogram_peer_ids() -> None:
+    """Allow Pyrogram to resolve modern Telegram 64-bit channel IDs.
+
+    Some Pyrogram releases still enforce an older 32-bit channel-ID range.
+    Telegram now returns channel/supergroup IDs beyond that range, such as
+    -1004418265133. Keep normal user/group validation intact and classify
+    modern -100... IDs as channels.
+    """
+    original_get_peer_type = pyrogram_utils.get_peer_type
+
+    if getattr(original_get_peer_type, "_colabvid_64bit_patch", False):
+        return
+
+    def get_peer_type(peer_id):
+        if isinstance(peer_id, int) and peer_id <= -1000000000000:
+            return "channel"
+        return original_get_peer_type(peer_id)
+
+    get_peer_type._colabvid_64bit_patch = True
+    pyrogram_utils.get_peer_type = get_peer_type
+
+
 def main() -> None:
     settings = Settings.from_env()
     if settings.channel_id is None:
         raise RuntimeError(
             "COLABVID_CHANNEL_ID is required for uploading rendered clips."
         )
+
+    # Pyrogram releases with the old peer-ID validation reject newer Telegram
+    # channel IDs before Telegram is contacted. Patch that validation first.
+    _patch_pyrogram_peer_ids()
 
     # Ensure Pyrogram can create its SQLite session database in Colab.
     PYROGRAM_WORKDIR.mkdir(parents=True, exist_ok=True)
@@ -50,7 +77,8 @@ def main() -> None:
             raise RuntimeError(
                 "Pyrogram cannot access COLABVID_CHANNEL_ID "
                 f"({settings.channel_id}). Make sure this bot is a member/admin "
-                "of the destination channel. Pyrogram error: {type(exc).__name__}: {exc}"
+                "of the destination channel. "
+                f"Pyrogram error: {type(exc).__name__}: {exc}"
             ) from exc
 
         resolved_channel_id = int(resolved_chat.id)
